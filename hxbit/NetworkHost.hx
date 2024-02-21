@@ -526,7 +526,7 @@ class NetworkHost {
 	}
 
 	public function resetState() {
-		hxbit.Serializer.resetCounters();
+//		hxbit.Serializer.resetCounters();
 		ctx = new NetworkSerializer(this);
 		@:privateAccess ctx.newObjects = [];
 		ctx.begin();
