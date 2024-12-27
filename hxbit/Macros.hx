@@ -298,7 +298,7 @@ class Macros {
 			return null;
 		for( m in meta) {
 			switch( m.name ) {
-			case ":s", ":optional", ":serializePriority",":allowCDB":
+			case ":s", ":optional", ":serializePriority", ":allowCDB", ":isVar":
 				//
 			case ":increment":
 				var inc : Null<Float> = null;
@@ -552,7 +552,7 @@ class Macros {
 	}
 
 	static function toType( t : ComplexType ) : Type {
-		return Context.typeof(macro (null:$t));
+		return ComplexTypeTools.toType(t);
 	}
 
 
@@ -894,7 +894,7 @@ class Macros {
 
 	public static function buildSerializable(isStruct=false) {
 		var cl = Context.getLocalClass().get();
-		if( cl.isInterface || Context.defined("display") || cl.meta.has(":skipSerialize") )
+		if( cl.isInterface || cl.meta.has(":skipSerialize") )
 			return null;
 		var fields = Context.getBuildFields();
 		var toSerialize = [];
@@ -949,9 +949,11 @@ class Macros {
 
 		var fieldsInits = [];
 		for( f in fields ) {
-			if( f.access.indexOf(AStatic) >= 0 ) continue;
+			if( f.access != null && f.access.indexOf(AStatic) >= 0 ) continue;
 			switch( f.kind ) {
 			case FVar(_, e), FProp(_, _, _, e) if( e != null ):
+				if (f.access != null && f.access.contains(AFinal))
+					Context.error("Serializables may not have member final variables", f.pos);
 				// before unserializing
 				fieldsInits.push({ expr : EBinop(OpAssign,{ expr : EConst(CIdent(f.name)), pos : e.pos },e), pos : e.pos });
 			default:
@@ -1013,7 +1015,7 @@ class Macros {
 				var vis = null, noSave = false;
 				for( m in f.meta ) {
 					switch( m.name ) {
-					case ":visibility":
+					case ":visible":
 						vis = getVisibility(m);
 					case ":noSave":
 						noSave = true;
@@ -1048,7 +1050,7 @@ class Macros {
 				for( s in toSerialize ) {
 					switch( s.f.kind ) {
 					case FProp(_):
-						Context.error("Property not allowed on proxy StructSerializable", pos);
+						Context.error("Property not allowed on proxy StructSerializable", s.f.pos);
 					case FVar(t,e):
 						s.f.kind = FProp("default","set", t, e);
 						var fname = s.f.name;
@@ -1163,6 +1165,12 @@ class Macros {
 				var name = s.f.name;
 				var acall = s.f == serializePriority ? "unshift" : "push";
 				var e = macro { schema.fieldsNames.$acall($v{name}); schema.fieldsTypes.$acall(hxbit.Macros.getFieldType(this.$name)); };
+				for( m in s.meta ) {
+					switch( m.name ) {
+					case ":noSave":
+						e = macro if (!forSave) $e{e};
+					}
+				}
 				schema.push(e);
 			}
 			fields.push({
@@ -1171,10 +1179,10 @@ class Macros {
 				access : access,
 				meta : noCompletion,
 				kind : FFun({
-					args : [],
+					args : [{ name : "forSave", type : macro : Bool, value : macro true }],
 					ret : null,
 					expr : macro {
-						var schema = ${if( isSubSer ) macro super.getSerializeSchema() else macro new hxbit.Schema()};
+						var schema = ${if( isSubSer ) macro super.getSerializeSchema(forSave) else macro new hxbit.Schema()};
 						$b{schema};
 						schema.isFinal = ${isStruct ? macro true : macro hxbit.Serializer.isClassFinal(__clid)};
 						return schema;
@@ -1415,8 +1423,8 @@ class Macros {
 						}),
 					},{
 						name : "serialize",
-						access : [AInline, APublic],
-						meta : [{name:":extern",pos:pos}],
+						access : [AInline, APublic, AExtern],
+						meta : [],
 						pos : pos,
 						kind : FFun( {
 							args : [{ name : "ctx", type : macro : hxbit.Serializer },{ name : "v", type : pt.toComplexType() }],
@@ -1425,8 +1433,8 @@ class Macros {
 						}),
 					},{
 						name : "unserialize",
-						access : [AInline, APublic],
-						meta : [{name:":extern",pos:pos}],
+						access : [AInline, APublic, AExtern],
+						meta : [],
 						pos : pos,
 						kind : FFun( {
 							args : [{ name : "ctx", type : macro : hxbit.Serializer }],
@@ -1437,8 +1445,8 @@ class Macros {
 					#if (hxbit_visibility || hxbit_mark)
 					{
 						name : "markReferences",
-						access : [AInline, APublic],
-						meta : [{name:":extern",pos:pos}],
+						access : [AInline, APublic, AExtern],
+						meta : [],
 						pos : pos,
 						kind : FFun( {
 							args : [{ name : "value", type : pt.toComplexType() },{ name : "mark", type : macro : hxbit.Serializable.MarkInfo },{ name : "from", type : macro : hxbit.NetworkSerializable }],
@@ -1477,8 +1485,8 @@ class Macros {
 					#if hxbit_clear
 					{
 						name : "clearReferences",
-						access : [AInline, APublic],
-						meta : [{name:":extern",pos:pos}],
+						access : [AInline, APublic,AExtern],
+						meta : [],
 						pos : pos,
 						kind : FFun( {
 							args : [{ name : "value", type : pt.toComplexType() },{ name : "mark", type : macro : hxbit.Serializable.MarkInfo }],
@@ -1490,7 +1498,7 @@ class Macros {
 						access : [AStatic],
 						pos : pos,
 						kind : FFun({
-							args : [{ name : "value", type : pt.toComplexType() },{ name : "mark", type : macro : hxbit.Serializable.MarkInfo }],
+							args : [{ name : "__value", type : pt.toComplexType() },{ name : "mark", type : macro : hxbit.Serializable.MarkInfo }],
 							ret : pt.toComplexType(),
 							expr : {
 								var cases = [];
@@ -1506,17 +1514,17 @@ class Macros {
 										}
 										if( marks.length > 0 ) {
 											marks.unshift(macro var __changed = false);
-											marks.push(macro __changed ? $i{c.name}($a{eargs}): value);
+											marks.push(macro __changed ? $i{c.name}($a{eargs}): __value);
 											cases.push({ values : [macro $i{c.name}($a{eargs})], expr : macro {$b{marks}} });
 										}
 									default:
 									}
 								}
-								var swexpr = { expr : ESwitch(macro value,cases,macro value), pos : pos };
+								var swexpr = { expr : ESwitch(macro __value,cases,macro __value), pos : pos };
 								if( cases.length == 0 )
-									macro return value;
+									macro return __value;
 								else
-									macro return value == null ? null : $swexpr;
+									macro return __value == null ? null : $swexpr;
 							}
 						})
 					},
@@ -1641,7 +1649,7 @@ class Macros {
 
 	public static function buildNetworkSerializable(?fields: Array<Field>) {
 		var cl = Context.getLocalClass().get();
-		if( cl.isInterface || Context.defined("display") )
+		if( cl.isInterface )
 			return null;
 
 		var clName = Context.getLocalClass().toString();
@@ -1683,6 +1691,8 @@ class Macros {
 			}
 		}
 
+		var requiredSetters = new Map(), setterCount = 0;
+
 		for( f in fields ) {
 
 			if( superRPC.exists(f.name) ) {
@@ -1700,7 +1710,10 @@ class Macros {
 				continue;
 			}
 
-			if( f.access.indexOf(AOverride) >= 0 && StringTools.startsWith(f.name, "set_") && superFields.exists(f.name.substr(4)) ) {
+			if( StringTools.startsWith(f.name, "set_") && requiredSetters.remove(f.name.substr(4)) )
+				setterCount--;
+
+			if( f.access != null && f.access.indexOf(AOverride) >= 0 && StringTools.startsWith(f.name, "set_") && superFields.exists(f.name.substr(4)) ) {
 				// overridden setter of network property
 				var fname = f.name.substr(4);
 				switch( f.kind ) {
@@ -1722,6 +1735,13 @@ class Macros {
 							break;
 						}
 					toSerialize.push({ f : f, m : meta, visibility : vis, type : null });
+					if( f.kind != null )
+						switch( f.kind ) {
+						case FProp(_, "set",_,_):
+							requiredSetters.set(f.name, f.pos);
+							setterCount++;
+						default:
+						}
 					break;
 				}
 				if( meta.name == ":rpc" ) {
@@ -1741,6 +1761,14 @@ class Macros {
 					break;
 				}
 			}
+		}
+
+		if( setterCount > 0 ) {
+			for( f in fields )
+				if( f.name.substr(0,4) == "set_" )
+					requiredSetters.remove(f.name.substr(4));
+			for( name in requiredSetters.keys() )
+				Context.warning("Method set_"+name+" required by property "+name+" is missing", requiredSetters.get(name));
 		}
 
 		var sup = cl.superClass;
@@ -1823,6 +1851,7 @@ class Macros {
 		var flushExpr = [];
 		var syncExpr = [];
 		var initExpr = [];
+		var condMarkCases: Array<Case> = [];
 		var noComplete : Metadata = [ { name : ":noCompletion", pos : pos } ];
 		var saveMask : haxe.Int64 = 0;
 		for( f in toSerialize ) {
@@ -1885,8 +1914,9 @@ class Macros {
 			f.f.kind = FProp(getter,"set", ftype.t, einit);
 
 			var bitID = startFID++;
-			var markExpr = macro networkSetBit($v{ bitID });
-			markExpr = makeMarkExpr(fields, fname, ftype, markExpr);
+			var baseMarkExpr = macro networkSetBit($v{ bitID });
+			var markExpr = makeMarkExpr(fields, fname, ftype, baseMarkExpr);
+			var condMarkExpr = makeMarkExpr(fields, fname, ftype, baseMarkExpr, false);
 
 			var compExpr : Expr = macro this.$fname != v;
 			if(ftype.d.match(PEnum(_)))
@@ -1962,6 +1992,31 @@ class Macros {
 					ret : null,
 				}),
 				access : [AInline],
+			});
+			condMarkCases.push({
+				values : [macro $v{bitID}],
+				expr : condMarkExpr,
+			});
+		}
+
+		if( toSerialize.length != 0 || !isSubSer ) {
+			var access = [APublic];
+			if( isSubSer )
+				access.push(AOverride);
+			var defaultCase = macro networkSetBit(b);
+			if( isSubSer )
+				defaultCase = macro super.networkSetBitCond(b);
+			var swExpr = { expr : ESwitch( { expr : EConst(CIdent("b")), pos : pos }, condMarkCases, defaultCase), pos : pos };
+			fields.push({
+				name : "networkSetBitCond",
+				pos : pos,
+				access : access,
+				meta : noComplete,
+				kind : FFun({
+					args : [ { name : "b", type : macro : Int } ],
+					ret : macro : Void,
+					expr : swExpr,
+				}),
 			});
 		}
 
@@ -2126,7 +2181,7 @@ class Macros {
 				r.f.access.remove(APublic);
 				r.f.meta.push( { name : ":noCompletion", pos : p } );
 
-				var exprs = [ { expr : EVars([for( a in funArgs ) { name : a.name, type : a.opt ? TPath({ pack : [], name : "Null", params : [TPType(a.type)] }) : a.type, expr : macro cast null } ]), pos : p } ];
+				var exprs = [ { expr : EVars([for( a in funArgs ) { name : a.name, type : a.opt && a.type != null ? TPath({ pack : [], name : "Null", params : [TPType(a.type)] }) : a.type, expr : macro cast null } ]), pos : p } ];
 				if( returnVal.call ) {
 					exprs.push(macro var __v = cast null);
 					exprs.push(macro if( false ) { function onResult(v) __v = v; $fcall; }); // force typing
@@ -2530,10 +2585,10 @@ class Macros {
 		return null;
 	}
 
-	static function makeMarkExpr( fields : Array<Field>, fname : String, t : PropType, mark : Expr ) {
+	static function makeMarkExpr( fields : Array<Field>, fname : String, t : PropType, mark : Expr, forSetter=true ) {
 		var rname = "__ref_" + fname;
 		var needRef = false;
-		if( t.increment != null ) {
+		if( t.increment != null && forSetter ) {
 			needRef = true;
 			mark = macro if( Math.floor(v / $v{t.increment}) != this.$rname ) { this.$rname = Math.floor(v / $v{t.increment}); $mark; };
 		}
@@ -2626,7 +2681,7 @@ class Macros {
 						hasProxy = true;
 				}
 				var optMeta : Metadata = [{ name : ":optional", pos : pos, params : [] }];
-				var loadT = haxe.macro.ComplexType.TAnonymous([for( f in fields ) { name : f.name, pos : pos, kind : FVar(f.type.t), meta : f.opt ? optMeta : null }]);
+				var loadT = haxe.macro.Expr.ComplexType.TAnonymous([for( f in fields ) { name : f.name, pos : pos, kind : FVar(f.type.t), meta : f.opt ? optMeta : null }]);
 				if( hasProxy )
 					pt = loadT;
 
@@ -2636,8 +2691,8 @@ class Macros {
 					var bit : Int;
 					@:noCompletion public var __value(get, never) : $pt;
 					inline function get___value() : $pt return cast this;
-					inline function mark() if( obj != null ) obj.networkSetBit(bit);
-					@:noCompletion public function networkSetBit(_) mark();
+					public inline function mark() if( obj != null ) obj.networkSetBitCond(bit);
+					@:noCompletion public inline function networkSetBitCond(_) mark();
 					@:noCompletion public function bindHost(obj, bit) { this.obj = obj; this.bit = bit; }
 					@:noCompletion public function unbindHost() this.obj = null;
 					@:noCompletion public function toString() return hxbit.NetworkSerializable.BaseProxy.objToString(this);
