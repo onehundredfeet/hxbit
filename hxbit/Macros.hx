@@ -362,7 +362,7 @@ class Macros {
 		var desc = switch( t ) {
 		case TAbstract(a, pl):
 			switch( a.toString() ) {
-			case "haxe.Int64", "hl.I64":
+			case "haxe.Int64", "hl.I64", "cpp.Int64":
 				PInt64;
 			case "Float", "Single":
 				PFloat;
